@@ -1,55 +1,77 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import requests
-import math
+import feedparser
 
 app = Flask(__name__)
 CORS(app)
 
 OWM_KEY = "7609a59c493758162d9b0a6af2914e1f"
 
-# ===== ALERTAS GLOBAIS (NOAA / INMET / OWM) =====
+# ================= ALERTAS =================
 @app.route("/alertas")
 def alertas():
     alertas = []
 
     # ===== NOAA (EUA / CANADÁ) =====
     try:
-        r = requests.get("https://api.weather.gov/alerts/active")
-        data = r.json()
+        noaa = requests.get(
+            "https://api.weather.gov/alerts/active",
+            headers={"User-Agent": "RadarGlobal"}
+        ).json()
 
-        for a in data.get("features", []):
-            props = a.get("properties", {})
-            geo = a.get("geometry")
+        for f in noaa.get("features", []):
+            props = f["properties"]
+            event = props.get("event", "")
+            desc = props.get("headline", "")
+            coords = f["geometry"]
 
-            if geo and geo.get("coordinates"):
-                lon, lat = geo["coordinates"][0][0]
+            if not coords:
+                continue
 
-                alertas.append({
-                    "lat": lat,
-                    "lon": lon,
-                    "emoji": "🌪️" if "Tornado" in props.get("event", "") else "🚨",
-                    "vento": props.get("windSpeed", "N/A"),
-                    "nuvem": props.get("event", ""),
-                    "descricao": props.get("headline", ""),
-                    "fonte": "NOAA"
-                })
+            lon, lat = coords["coordinates"][0][0]
+
+            emoji = "⚠️"
+            if "Tornado" in event:
+                emoji = "🌪️"
+            elif "Severe" in event:
+                emoji = "🟠"
+            elif "Flood" in event:
+                emoji = "🌊"
+
+            alertas.append({
+                "lat": lat,
+                "lon": lon,
+                "emoji": emoji,
+                "evento": event,
+                "fonte": "NOAA"
+            })
     except:
         pass
 
-    # ===== INMET (BRASIL) =====
+    # ===== INMET (BRASIL – RSS) =====
     try:
-        r = requests.get("https://apitempo.inmet.gov.br/avisos/ativos")
-        data = r.json()
+        rss = feedparser.parse(
+            "https://alertas.inmet.gov.br/cap/rss/alertas.rss"
+        )
+        for e in rss.entries:
+            titulo = e.title
+            desc = e.summary
 
-        for a in data:
+            emoji = "⚠️"
+            if "Tornado" in titulo:
+                emoji = "🌪️"
+            elif "Tempestade" in titulo:
+                emoji = "🟠"
+            elif "Chuva" in titulo:
+                emoji = "🌧️"
+
+            # Coordenadas aproximadas (Brasil inteiro)
             alertas.append({
-                "lat": float(a["latitude"]),
-                "lon": float(a["longitude"]),
-                "emoji": "🚨",
-                "vento": a.get("intensidade", "N/A"),
-                "nuvem": a.get("evento", ""),
-                "descricao": a.get("descricao", ""),
+                "lat": -15,
+                "lon": -47,
+                "emoji": emoji,
+                "evento": titulo,
                 "fonte": "INMET"
             })
     except:
@@ -57,36 +79,42 @@ def alertas():
 
     return jsonify(alertas)
 
-
-# ===== VENTO GLOBAL (QUADRADOS) =====
+# ================= VENTO =================
 @app.route("/wind")
 def wind():
-    lat = float(request.args.get("lat"))
-    lon = float(request.args.get("lon"))
+    lat = request.args.get("lat")
+    lon = request.args.get("lon")
 
-    try:
-        r = requests.get(
-            "https://api.openweathermap.org/data/2.5/weather",
-            params={
-                "lat": lat,
-                "lon": lon,
-                "appid": OWM_KEY
-            }
-        )
-        d = r.json()
-        kmh = d.get("wind", {}).get("speed", 0) * 3.6
-    except:
-        kmh = 0
+    r = requests.get(
+        f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={OWM_KEY}&units=metric"
+    ).json()
 
     return jsonify({
-        "wind_kmh": round(kmh, 1)
+        "wind_kmh": r["wind"]["speed"] * 3.6
     })
 
+# ================= FORECAST =================
+@app.route("/forecast")
+def forecast():
+    lat = request.args.get("lat")
+    lon = request.args.get("lon")
 
-@app.route("/")
-def home():
-    return "Radar Backend Online"
+    r = requests.get(
+        f"https://api.openweathermap.org/data/2.5/forecast?lat={lat}&lon={lon}&appid={OWM_KEY}&units=metric"
+    ).json()
 
+    dias = {}
+    for i in r["list"]:
+        dia = i["dt_txt"].split(" ")[0]
+        if dia not in dias:
+            dias[dia] = {
+                "temp": i["main"]["temp"],
+                "vento": i["wind"]["speed"] * 3.6,
+                "pressao": i["main"]["pressure"],
+                "chuva": i.get("rain", {}).get("3h", 0)
+            }
+
+    return jsonify(dias)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run()
