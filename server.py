@@ -1,125 +1,68 @@
 from flask import Flask, jsonify, request
+from flask_cors import CORS
 import requests
-import os
+import math
 
 app = Flask(__name__)
+CORS(app)
 
-# =========================
-# CONFIG
-# =========================
-OWM_KEY = os.environ.get("OWM_KEY")  # coloque no Render
-HEADERS_NOAA = {"User-Agent": "GlobalRadar/1.0"}
+OWM_KEY = "7609a59c493758162d9b0a6af2914e1f"
 
-# =========================
-# NOAA ALERTS (EUA)
-# =========================
-def get_noaa_alerts():
-    alerts = []
+# ===== ALERTAS GLOBAIS (NOAA / INMET / OWM) =====
+@app.route("/alertas")
+def alertas():
+    alertas = []
+
+    # ===== NOAA (EUA / CANADÁ) =====
     try:
-        r = requests.get(
-            "https://api.weather.gov/alerts/active",
-            headers=HEADERS_NOAA,
-            timeout=10
-        )
+        r = requests.get("https://api.weather.gov/alerts/active")
         data = r.json()
 
-        for f in data.get("features", []):
-            prop = f["properties"]
-            geo = f.get("geometry")
+        for a in data.get("features", []):
+            props = a.get("properties", {})
+            geo = a.get("geometry")
 
-            if not geo:
-                continue
+            if geo and geo.get("coordinates"):
+                lon, lat = geo["coordinates"][0][0]
 
-            lon, lat = geo["coordinates"][0][0]
-
-            event = prop.get("event", "").lower()
-
-            emoji = "⚠️"
-            tipo = prop.get("event", "")
-
-            if "tornado" in event:
-                emoji = "🌪️"
-            elif "hurricane" in event:
-                emoji = "🌀"
-            elif "severe thunderstorm" in event:
-                emoji = "⛈️"
-
-            alerts.append({
-                "lat": lat,
-                "lon": lon,
-                "emoji": emoji,
-                "tipo": tipo,
-                "fonte": "NOAA"
-            })
+                alertas.append({
+                    "lat": lat,
+                    "lon": lon,
+                    "emoji": "🌪️" if "Tornado" in props.get("event", "") else "🚨",
+                    "vento": props.get("windSpeed", "N/A"),
+                    "nuvem": props.get("event", ""),
+                    "descricao": props.get("headline", ""),
+                    "fonte": "NOAA"
+                })
     except:
         pass
 
-    return alerts
-
-
-# =========================
-# INMET ALERTS (BRASIL)
-# =========================
-def get_inmet_alerts():
-    alerts = []
+    # ===== INMET (BRASIL) =====
     try:
-        r = requests.get("https://apiprevmet3.inmet.gov.br/avisos", timeout=10)
+        r = requests.get("https://apitempo.inmet.gov.br/avisos/ativos")
         data = r.json()
 
         for a in data:
-            area = a.get("area", {})
-            lat = area.get("lat")
-            lon = area.get("lon")
-
-            if not lat or not lon:
-                continue
-
-            evento = a.get("evento", "").lower()
-
-            emoji = "⚠️"
-            if "tornado" in evento:
-                emoji = "🌪️"
-            elif "ciclone" in evento:
-                emoji = "🌀"
-            elif "tempestade" in evento:
-                emoji = "⛈️"
-            elif "chuva" in evento:
-                emoji = "🌨️"
-
-            alerts.append({
-                "lat": lat,
-                "lon": lon,
-                "emoji": emoji,
-                "tipo": a.get("evento"),
+            alertas.append({
+                "lat": float(a["latitude"]),
+                "lon": float(a["longitude"]),
+                "emoji": "🚨",
+                "vento": a.get("intensidade", "N/A"),
+                "nuvem": a.get("evento", ""),
+                "descricao": a.get("descricao", ""),
                 "fonte": "INMET"
             })
     except:
         pass
 
-    return alerts
+    return jsonify(alertas)
 
 
-# =========================
-# ENDPOINT: ALERTAS GLOBAIS
-# =========================
-@app.route("/alertas")
-def alertas():
-    data = []
-    data.extend(get_noaa_alerts())
-    data.extend(get_inmet_alerts())
-    return jsonify(data)
-
-
-# =========================
-# ENDPOINT: VENTO GLOBAL
-# =========================
+# ===== VENTO GLOBAL (QUADRADOS) =====
 @app.route("/wind")
 def wind():
-    lat = request.args.get("lat")
-    lon = request.args.get("lon")
-
-    if not lat or not lon:
-        return jsonify({"error": "lat/lon required"}), 400
+    lat = float(request.args.get("lat"))
+    lon = float(request.args.get("lon"))
 
     try:
         r = requests.get(
@@ -127,23 +70,23 @@ def wind():
             params={
                 "lat": lat,
                 "lon": lon,
-                "appid": OWM_KEY,
-                "units": "metric"
-            },
-            timeout=10
+                "appid": OWM_KEY
+            }
         )
         d = r.json()
         kmh = d.get("wind", {}).get("speed", 0) * 3.6
-
-        return jsonify({
-            "wind_kmh": round(kmh, 1)
-        })
     except:
-        return jsonify({"wind_kmh": 0})
+        kmh = 0
+
+    return jsonify({
+        "wind_kmh": round(kmh, 1)
+    })
 
 
-# =========================
-# RUN (RENDER)
-# =========================
+@app.route("/")
+def home():
+    return "Radar Backend Online"
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
