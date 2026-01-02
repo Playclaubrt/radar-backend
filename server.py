@@ -1,112 +1,97 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import requests
-from datetime import datetime
 
 app = Flask(__name__)
 CORS(app)
 
-OWM_KEY = "7609a59c493758162d9b0a6af2914e1f"
+API_KEY = "7609a59c493758162d9b0a6af2914e1f"
 
-HEADERS = {"User-Agent": "RadarGlobal/1.0"}
+# ---------------- UTIL ----------------
+def ms_to_kmh(ms):
+    return round(ms * 3.6, 1)
 
-# ================= ALERTAS NOAA =================
+# ---------------- ALERTAS ----------------
 @app.route("/alertas")
 def alertas():
-    alertas = []
-
-    try:
-        r = requests.get(
-            "https://api.weather.gov/alerts/active",
-            headers=HEADERS,
-            timeout=10
-        ).json()
-
-        for f in r["features"]:
-            p = f["properties"]
-            g = f.get("geometry")
-
-            if not g:
-                continue
-
-            coords = g["coordinates"][0][0]
-            lon, lat = coords[0], coords[1]
-
-            evento = p.get("event", "")
-            headline = p.get("headline", "")
-            desc = p.get("description", "")
-            instr = p.get("instruction", "")
-            inicio = p.get("effective", "")
-            severidade = p.get("severity", "")
-            urgencia = p.get("urgency", "")
-
-            emoji = "⚠️"
-            if "Tornado" in evento: emoji = "🌪️"
-            elif "Flood" in evento: emoji = "🌊"
-            elif "Hurricane" in evento: emoji = "🌀"
-            elif "Severe" in evento: emoji = "⛈️"
-
-            alertas.append({
-                "lat": lat,
-                "lon": lon,
-                "emoji": emoji,
-                "evento": evento,
-                "headline": headline,
-                "descricao": desc,
-                "instrucao": instr,
-                "inicio": inicio,
-                "severidade": severidade,
-                "urgencia": urgencia,
-                "fonte": "NOAA"
-            })
-
-    except:
-        pass
-
-    return jsonify(alertas)
-
-# ================= VENTO =================
-@app.route("/wind")
-def wind():
     lat = request.args.get("lat")
     lon = request.args.get("lon")
 
     r = requests.get(
-        f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={OWM_KEY}&units=metric",
-        timeout=10
-    ).json()
+        f"https://api.openweathermap.org/data/3.0/onecall"
+        f"?lat={lat}&lon={lon}"
+        f"&exclude=minutely,hourly"
+        f"&units=metric&lang=pt"
+        f"&appid={API_KEY}"
+    )
 
-    kmh = round(r["wind"]["speed"] * 3.6, 1)
-    if kmh > 300:
-        kmh = 300
+    if r.status_code != 200:
+        return jsonify([])
 
-    return jsonify({"kmh": kmh})
+    d = r.json()
+    alerts = []
 
-# ================= FORECAST 5 DIAS =================
-@app.route("/forecast")
-def forecast():
+    for a in d.get("alerts", []):
+        alerts.append({
+            "evento": a.get("event"),
+            "descricao": a.get("description"),
+            "inicio": a.get("start"),
+            "fim": a.get("end"),
+            "fonte": a.get("sender_name"),
+            "emoji": "⚠️"
+        })
+
+    return jsonify(alerts)
+
+# ---------------- VENTO ----------------
+@app.route("/vento")
+def vento():
     lat = request.args.get("lat")
     lon = request.args.get("lon")
 
     r = requests.get(
-        f"https://api.openweathermap.org/data/2.5/forecast?lat={lat}&lon={lon}&appid={OWM_KEY}&units=metric",
-        timeout=10
-    ).json()
+        f"https://api.openweathermap.org/data/2.5/weather"
+        f"?lat={lat}&lon={lon}&appid={API_KEY}&units=metric"
+    )
 
-    dias = {}
+    if r.status_code != 200:
+        return jsonify({"wind_kmh": 0})
 
-    for i in r["list"]:
-        d = i["dt_txt"].split(" ")[0]
-        if d not in dias:
-            dias[d] = {
-                "temp": round(i["main"]["temp"]),
-                "vento": round(i["wind"]["speed"] * 3.6, 1),
-                "pressao": i["main"]["pressure"],
-                "umidade": i["main"]["humidity"],
-                "icone": i["weather"][0]["icon"]
-            }
+    d = r.json()
+    return jsonify({
+        "wind_kmh": ms_to_kmh(d["wind"]["speed"])
+    })
 
-    return jsonify(dias)
+# ---------------- PREVISÃO ----------------
+@app.route("/previsao")
+def previsao():
+    lat = request.args.get("lat")
+    lon = request.args.get("lon")
+
+    r = requests.get(
+        f"https://api.openweathermap.org/data/3.0/onecall"
+        f"?lat={lat}&lon={lon}"
+        f"&exclude=current,minutely,hourly,alerts"
+        f"&units=metric&lang=pt"
+        f"&appid={API_KEY}"
+    )
+
+    if r.status_code != 200:
+        return jsonify([])
+
+    d = r.json()
+    out = []
+
+    for dia in d["daily"][:5]:
+        out.append({
+            "temp": dia["temp"]["day"],
+            "vento": ms_to_kmh(dia["wind_speed"]),
+            "pressao": dia["pressure"],
+            "umidade": dia["humidity"],
+            "nuvem": dia["weather"][0]["description"]
+        })
+
+    return jsonify(out)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
