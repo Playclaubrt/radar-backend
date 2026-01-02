@@ -1,55 +1,55 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import requests
-import math
-import time
 
 app = Flask(__name__)
 CORS(app)
 
 OWM_KEY = "7609a59c493758162d9b0a6af2914e1f"
 
-# ======================
-# ALERTAS NOAA (GLOBAL)
-# ======================
+# =========================
+# ALERTAS NOAA (CRU)
+# =========================
 @app.route("/alertas")
 def alertas():
     url = "https://api.weather.gov/alerts/active"
     r = requests.get(url, headers={
-        "User-Agent": "RadarGlobal/1.0"
+        "User-Agent": "RadarWindyLike/1.0"
     })
-
     data = r.json()
-    out = []
+
+    alerts = []
 
     for f in data.get("features", []):
         p = f["properties"]
-        geo = f.get("geometry")
-
-        if not geo:
+        g = f.get("geometry")
+        if not g:
             continue
 
-        lon, lat = geo["coordinates"][0][0]
+        lon, lat = g["coordinates"][0][0]
 
-        out.append({
+        alerts.append({
             "lat": lat,
             "lon": lon,
-            "tipo": p.get("event"),
-            "descricao": p.get("description"),
-            "inicio": p.get("effective"),
-            "fonte": "NOAA",
-            "emoji": "🌪️" if "Tornado" in p.get("event","") else "⚠️"
+            "event": p.get("event"),
+            "headline": p.get("headline"),
+            "description": p.get("description"),
+            "instruction": p.get("instruction"),
+            "severity": p.get("severity"),
+            "effective": p.get("effective"),
+            "expires": p.get("expires"),
+            "source": "NOAA"
         })
 
-    return jsonify(out)
+    return jsonify(alerts)
 
-# ======================
-# VENTO (quadrados)
-# ======================
+# =========================
+# VENTO + UMIDADE (RÁPIDO)
+# =========================
 @app.route("/wind")
 def wind():
-    lat = request.args.get("lat")
-    lon = request.args.get("lon")
+    lat = request.args["lat"]
+    lon = request.args["lon"]
 
     r = requests.get(
         f"https://api.openweathermap.org/data/2.5/weather"
@@ -57,39 +57,38 @@ def wind():
     )
     d = r.json()
 
-    kmh = d.get("wind", {}).get("speed", 0) * 3.6
-    kmh = min(kmh, 250)  # trava valores absurdos
-
     return jsonify({
-        "wind_kmh": round(kmh,1)
+        "wind": round(d["wind"]["speed"] * 3.6, 1),
+        "humidity": d["main"]["humidity"],
+        "pressure": d["main"]["pressure"],
+        "temp": d["main"]["temp"]
     })
 
-# ======================
-# DETALHES AO CLICAR
-# ======================
-@app.route("/detalhes")
-def detalhes():
-    lat = request.args.get("lat")
-    lon = request.args.get("lon")
+# =========================
+# TIMELINE (5 DIAS)
+# =========================
+@app.route("/timeline")
+def timeline():
+    lat = request.args["lat"]
+    lon = request.args["lon"]
 
     r = requests.get(
         f"https://api.openweathermap.org/data/2.5/forecast"
-        f"?lat={lat}&lon={lon}&appid={OWM_KEY}&units=metric&lang=pt"
+        f"?lat={lat}&lon={lon}&appid={OWM_KEY}&units=metric"
     )
     d = r.json()
 
-    dias = []
-    for i in range(0,40,8):
-        item = d["list"][i]
-        dias.append({
-            "temp": item["main"]["temp"],
-            "umidade": item["main"]["humidity"],
-            "pressao": item["main"]["pressure"],
-            "vento": item["wind"]["speed"]*3.6,
-            "icone": item["weather"][0]["icon"]
+    days = []
+    for i in range(0, 40, 8):
+        x = d["list"][i]
+        days.append({
+            "temp": x["main"]["temp"],
+            "humidity": x["main"]["humidity"],
+            "pressure": x["main"]["pressure"],
+            "wind": round(x["wind"]["speed"] * 3.6, 1),
+            "icon": x["weather"][0]["icon"]
         })
 
-    return jsonify(dias)
+    return jsonify(days)
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+app.run(host="0.0.0.0", port=10000)
