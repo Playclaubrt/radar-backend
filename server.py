@@ -57,7 +57,7 @@ def inmet_alerts():
 def owm_data():
     lat = request.args.get("lat")
     lon = request.args.get("lon")
-    api_key = "SUA_API_KEY_AQUI"
+    api_key = "7609a59c493758162d9b0a6af2914e1f"
 
     url = (
         f"https://api.openweathermap.org/data/2.5/forecast?"
