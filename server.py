@@ -1,98 +1,90 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
-import requests
 import feedparser
+import requests
 
 app = Flask(__name__)
 CORS(app)
 
-# ======================
-# NOAA – EUA / CANADÁ
-# ======================
-NOAA_API = "https://api.weather.gov/alerts/active"
-
-# ======================
-# INMET – BRASIL (RSS)
-# ======================
-INMET_RSS = "https://apiprevmet.inmet.gov.br/avisos/rss"
-
-# ======================
-# EMOJIS OFICIAIS
-# ======================
-def definir_emoji(evento):
-    e = evento.lower()
-
-    if "tornado" in e:
-        return "🌪️"
-    if "hurricane" in e or "furacão" in e:
-        return "🌀🔴"
-    if "ciclone" in e:
-        return "🌀"
-    if "neve" in e or "snow" in e or "blizzard" in e:
-        return "❄️"
-    if "chuva" in e or "rain" in e:
-        if "amarelo" in e:
-            return "🌨️"
-        if "laranja" in e:
-            return "🌩️"
-        if "vermelho" in e:
-            return "⛈️"
-        return "🌧️"
-
-    return "⚠️"
-
-# ======================
-# NOAA ALERTAS
-# ======================
+# ===============================
+# NOAA ALERTS
+# ===============================
 @app.route("/noaa")
 def noaa_alerts():
-    r = requests.get(NOAA_API, headers={"User-Agent": "RadarGlobal"})
-    data = r.json()
+    url = "https://alerts.weather.gov/cap/us.php?x=0"
+    feed = feedparser.parse(url)
 
     alerts = []
-    for f in data.get("features", []):
-        p = f["properties"]
+
+    for e in feed.entries:
         alerts.append({
-            "emoji": definir_emoji(p.get("event","")),
-            "event": p.get("event"),
-            "description": p.get("description"),
-            "area": p.get("areaDesc"),
+            "title": e.title,
+            "summary": e.summary,
+            "published": e.published,
+            "link": e.link,
             "source": "NOAA"
         })
 
     return jsonify(alerts)
 
-# ======================
-# INMET ALERTAS (RSS)
-# ======================
+
+# ===============================
+# INMET ALERTS (RSS 100% ORIGINAL)
+# ===============================
 @app.route("/inmet")
 def inmet_alerts():
-    feed = feedparser.parse(INMET_RSS)
+    url = "https://apiprevmet3.inmet.gov.br/avisos/rss"
+    feed = feedparser.parse(url)
+
     alerts = []
 
     for e in feed.entries:
         alerts.append({
-            "emoji": definir_emoji(e.title),
-            "event": e.title,
-            "description": e.summary,
-            "area": None,
+            "title": e.title,
+            "description": e.description,  # TEXTO 100% ORIGINAL
+            "published": e.published,
+            "link": e.link,
             "source": "INMET"
         })
 
     return jsonify(alerts)
 
-# ======================
-# ALERTAS UNIFICADOS
-# ======================
-@app.route("/alertas")
-def todos_alertas():
-    return jsonify({
-        "noaa": noaa_alerts().json,
-        "inmet": inmet_alerts().json
-    })
 
-# ======================
-# START
-# ======================
+# ===============================
+# OWM – WEATHER DATA
+# ===============================
+@app.route("/owm")
+def owm_data():
+    lat = request.args.get("lat")
+    lon = request.args.get("lon")
+    api_key = "SUA_API_KEY_AQUI"
+
+    url = (
+        f"https://api.openweathermap.org/data/2.5/forecast?"
+        f"lat={lat}&lon={lon}&units=metric&lang=pt_br&appid={api_key}"
+    )
+
+    r = requests.get(url).json()
+
+    forecast = []
+
+    for item in r["list"][:40]:
+        forecast.append({
+            "temp": item["main"]["temp"],
+            "humidity": item["main"]["humidity"],
+            "pressure": item["main"]["pressure"],
+            "wind": item["wind"]["speed"] * 3.6,
+            "weather": item["weather"][0]["description"],
+            "dt": item["dt_txt"]
+        })
+
+    return jsonify(forecast)
+
+
+@app.route("/")
+def home():
+    return "Radar Backend Online"
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
