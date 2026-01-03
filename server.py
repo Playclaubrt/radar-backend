@@ -1,92 +1,98 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify
 from flask_cors import CORS
 import requests
-import math
+import feedparser
 
 app = Flask(__name__)
 CORS(app)
 
-OWM_KEY = "7609a59c493758162d9b0a6af2914e1f"
+# ======================
+# NOAA – EUA / CANADÁ
+# ======================
+NOAA_API = "https://api.weather.gov/alerts/active"
 
-# ===============================
-# ALERTAS NOAA (EUA / CANADÁ)
-# ===============================
-@app.route("/alertas")
-def alertas():
+# ======================
+# INMET – BRASIL (RSS)
+# ======================
+INMET_RSS = "https://apiprevmet.inmet.gov.br/avisos/rss"
+
+# ======================
+# EMOJIS OFICIAIS
+# ======================
+def definir_emoji(evento):
+    e = evento.lower()
+
+    if "tornado" in e:
+        return "🌪️"
+    if "hurricane" in e or "furacão" in e:
+        return "🌀🔴"
+    if "ciclone" in e:
+        return "🌀"
+    if "neve" in e or "snow" in e or "blizzard" in e:
+        return "❄️"
+    if "chuva" in e or "rain" in e:
+        if "amarelo" in e:
+            return "🌨️"
+        if "laranja" in e:
+            return "🌩️"
+        if "vermelho" in e:
+            return "⛈️"
+        return "🌧️"
+
+    return "⚠️"
+
+# ======================
+# NOAA ALERTAS
+# ======================
+@app.route("/noaa")
+def noaa_alerts():
+    r = requests.get(NOAA_API, headers={"User-Agent": "RadarGlobal"})
+    data = r.json()
+
     alerts = []
-
-    try:
-        r = requests.get(
-            "https://api.weather.gov/alerts/active",
-            headers={"User-Agent": "RadarGlobal"}
-        )
-        data = r.json()
-
-        for f in data.get("features", []):
-            p = f["properties"]
-
-            alerts.append({
-                "evento": p.get("event"),
-                "descricao": p.get("description"),
-                "inicio": p.get("effective"),
-                "fim": p.get("ends"),
-                "area": p.get("areaDesc"),
-                "fonte": "NOAA",
-                "emoji": "🌪️" if "Tornado" in p.get("event","") else "⚠️"
-            })
-
-    except Exception:
-        pass
+    for f in data.get("features", []):
+        p = f["properties"]
+        alerts.append({
+            "emoji": definir_emoji(p.get("event","")),
+            "event": p.get("event"),
+            "description": p.get("description"),
+            "area": p.get("areaDesc"),
+            "source": "NOAA"
+        })
 
     return jsonify(alerts)
 
-# ===============================
-# VENTO GLOBAL (GRADE)
-# ===============================
-@app.route("/wind")
-def wind():
-    lat = float(request.args.get("lat"))
-    lon = float(request.args.get("lon"))
+# ======================
+# INMET ALERTAS (RSS)
+# ======================
+@app.route("/inmet")
+def inmet_alerts():
+    feed = feedparser.parse(INMET_RSS)
+    alerts = []
 
-    r = requests.get(
-        f"https://api.openweathermap.org/data/2.5/weather"
-        f"?lat={lat}&lon={lon}&appid={OWM_KEY}&units=metric"
-    )
-
-    d = r.json()
-    vento = d.get("wind", {}).get("speed", 0) * 3.6
-
-    return jsonify({
-        "wind_kmh": round(vento, 1)
-    })
-
-# ===============================
-# PREVISÃO 5 DIAS
-# ===============================
-@app.route("/forecast")
-def forecast():
-    lat = request.args.get("lat")
-    lon = request.args.get("lon")
-
-    r = requests.get(
-        f"https://api.openweathermap.org/data/2.5/forecast"
-        f"?lat={lat}&lon={lon}&appid={OWM_KEY}&units=metric&lang=pt_br"
-    )
-
-    d = r.json()
-    dias = []
-
-    for i in range(0, 40, 8):
-        item = d["list"][i]
-        dias.append({
-            "temp": item["main"]["temp"],
-            "umidade": item["main"]["humidity"],
-            "vento": item["wind"]["speed"] * 3.6,
-            "pressao": item["main"]["pressure"],
-            "clima": item["weather"][0]["description"]
+    for e in feed.entries:
+        alerts.append({
+            "emoji": definir_emoji(e.title),
+            "event": e.title,
+            "description": e.summary,
+            "area": None,
+            "source": "INMET"
         })
 
-    return jsonify(dias)
+    return jsonify(alerts)
 
+# ======================
+# ALERTAS UNIFICADOS
+# ======================
+@app.route("/alertas")
+def todos_alertas():
+    return jsonify({
+        "noaa": noaa_alerts().json,
+        "inmet": inmet_alerts().json
+    })
+
+# ======================
+# START
+# ======================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
