@@ -12,7 +12,7 @@ CORS(app)
 # CONFIG
 # =========================
 INMET_RSS = "https://apiprevmet3.inmet.gov.br/avisos/rss"
-OWM_KEY = "SUA_API_KEY_AQUI"
+OWM_KEY = "7609a59c493758162d9b0a6af2914e1f"
 
 # Centros aproximados das UFs (usado APENAS para alertas textuais)
 UF_CENTERS = {
