@@ -10,13 +10,13 @@ CORS(app)
 INMET_RSS = "https://apiprevmet3.inmet.gov.br/alertas/rss"
 
 def ler_alertas():
-    resposta = requests.get(INMET_RSS, timeout=10)
-    resposta.raise_for_status()
+    r = requests.get(INMET_RSS, timeout=15)
+    r.raise_for_status()
 
-    root = ET.fromstring(resposta.content)
+    root = ET.fromstring(r.content)
     alertas = []
 
-    for item in root.iter("item"):
+    for item in root.findall(".//item"):
         titulo = item.findtext("title", "").strip()
         descricao = item.findtext("description", "").strip()
         link = item.findtext("link", "").strip()
@@ -30,10 +30,19 @@ def ler_alertas():
     return alertas
 
 
+@app.route("/")
+def home():
+    return jsonify({"status": "ok", "fonte": "INMET"})
+
+
 @app.route("/inmet")
 def inmet():
     modo = request.args.get("modo", "textual")
-    alertas = ler_alertas()
+
+    try:
+        alertas = ler_alertas()
+    except Exception as e:
+        return jsonify({"erro": "falha ao ler INMET"}), 500
 
     if modo == "textual":
         return jsonify({
@@ -50,8 +59,3 @@ def inmet():
         })
 
     return jsonify({"erro": "modo invalido"}), 400
-
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
