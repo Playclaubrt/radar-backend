@@ -1,4 +1,5 @@
 import time
+import re
 import requests
 import xml.etree.ElementTree as ET
 from flask import Flask, jsonify
@@ -10,8 +11,7 @@ CORS(app)
 INMET_RSS = "https://apiprevmet3.inmet.gov.br/alertas/rss"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0",
-    "Accept": "*/*"
+    "User-Agent": "Mozilla/5.0"
 }
 
 CACHE_TTL = 300  # 5 minutos
@@ -20,9 +20,15 @@ _cache = {
     "dados": []
 }
 
-# -----------------------------
-# LEITURA TOLERANTE DO INMET
-# -----------------------------
+UFS = [
+    "AC","AL","AP","AM","BA","CE","DF","ES","GO","MA",
+    "MT","MS","MG","PA","PB","PR","PE","PI","RJ","RN",
+    "RS","RO","RR","SC","SP","SE","TO"
+]
+
+# -------------------------------------------------
+# LEITURA TOLERANTE DO RSS
+# -------------------------------------------------
 def tentar_ler_rss():
     try:
         r = requests.get(INMET_RSS, headers=HEADERS, timeout=20)
@@ -34,16 +40,15 @@ def tentar_ler_rss():
 
     texto = r.text.strip()
 
-    # Aceita só se parecer XML
-    if "<rss" not in texto and "<item" not in texto:
+    if "<item>" not in texto:
         return None
 
     return texto
 
 
-# -----------------------------
-# CONVERSÃO XML → JSON
-# -----------------------------
+# -------------------------------------------------
+# EXTRAÇÃO COMPLETA DO ALERTA
+# -------------------------------------------------
 def converter(xml_texto):
     try:
         root = ET.fromstring(xml_texto)
@@ -56,48 +61,64 @@ def converter(xml_texto):
         titulo = item.findtext("title", "").strip()
         descricao = item.findtext("description", "").strip()
         link = item.findtext("link", "").strip()
+        pubdate = item.findtext("pubDate", "").strip()
 
         if not titulo:
             continue
 
+        # Severidade (texto)
+        severidade = "DESCONHECIDA"
+        if "PERIGO" in titulo.upper():
+            severidade = "PERIGO"
+        if "POTENCIAL" in titulo.upper():
+            severidade = "PERIGO POTENCIAL"
+
+        # Tipo do evento (chuva, vento, etc.)
+        tipo = "DESCONHECIDO"
+        for t in ["CHUVA", "VENTO", "GEADA", "ONDA DE CALOR", "FRIO"]:
+            if t in titulo.upper():
+                tipo = t
+                break
+
+        # UFs citadas
+        ufs_encontradas = []
+        for uf in UFS:
+            if uf in titulo or uf in descricao:
+                ufs_encontradas.append(uf)
+
+        if not ufs_encontradas:
+            ufs_encontradas = ["DESCONHECIDO"]
+
         alerta = {
             "titulo": titulo,
-            "descricao": descricao,
+            "descricao_completa": descricao,
+            "tipo": tipo,
+            "severidade": severidade,
+            "ufs": ufs_encontradas,
             "link": link,
-            "uf": "DESCONHECIDO"
+            "publicado_em": pubdate
         }
-
-        for uf in [
-            "AC","AL","AP","AM","BA","CE","DF","ES","GO","MA",
-            "MT","MS","MG","PA","PB","PR","PE","PI","RJ","RN",
-            "RS","RO","RR","SC","SP","SE","TO"
-        ]:
-            if uf in titulo or uf in descricao:
-                alerta["uf"] = uf
-                break
 
         alertas.append(alerta)
 
     return alertas
 
 
-# -----------------------------
+# -------------------------------------------------
 # CACHE + FALLBACK
-# -----------------------------
+# -------------------------------------------------
 def obter_alertas():
     agora = time.time()
 
-    # Cache válido
     if agora - _cache["timestamp"] < CACHE_TTL:
         return _cache["dados"], True, "cache"
 
-    xml_texto = tentar_ler_rss()
+    xml = tentar_ler_rss()
 
-    # Se INMET falhar → usa último cache
-    if xml_texto is None:
+    if xml is None:
         return _cache["dados"], True, "fallback"
 
-    dados = converter(xml_texto)
+    dados = converter(xml)
 
     _cache["timestamp"] = agora
     _cache["dados"] = dados
@@ -105,18 +126,9 @@ def obter_alertas():
     return dados, False, "inmet"
 
 
-# -----------------------------
+# -------------------------------------------------
 # ROTAS
-# -----------------------------
-@app.route("/")
-def status():
-    return jsonify({
-        "status": "ok",
-        "fonte": "INMET",
-        "backend": "RSS tolerante + cache"
-    })
-
-
+# -------------------------------------------------
 @app.route("/inmet/textual")
 def textual():
     alertas, cache, origem = obter_alertas()
@@ -135,9 +147,12 @@ def textual():
 def geografico():
     alertas, cache, origem = obter_alertas()
 
-    por_uf = {}
+    por_uf = {uf: [] for uf in UFS}
+
     for a in alertas:
-        por_uf.setdefault(a["uf"], []).append(a)
+        for uf in a["ufs"]:
+            if uf in por_uf:
+                por_uf[uf].append(a)
 
     return jsonify({
         "fonte": "INMET",
