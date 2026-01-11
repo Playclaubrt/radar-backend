@@ -5,20 +5,34 @@ from flask_cors import CORS
 app = Flask(__name__)
 CORS(app)
 
-INMET_JSON = "https://apiprevmet3.inmet.gov.br/alertas/ativos"
+INMET_URL = "https://apiprevmet3.inmet.gov.br/alertas/ativos"
 
 HEADERS = {
-    "User-Agent": "INMET-Client",
-    "Accept": "application/json"
+    "User-Agent": "Mozilla/5.0",
+    "Accept": "*/*"
 }
 
 def ler_alertas():
-    r = requests.get(INMET_JSON, headers=HEADERS, timeout=20)
+    r = requests.get(INMET_URL, headers=HEADERS, timeout=20)
 
     if r.status_code != 200:
         raise Exception("INMET indisponivel")
 
-    dados = r.json()
+    if not r.text.strip():
+        raise Exception("Resposta vazia do INMET")
+
+    content_type = r.headers.get("Content-Type", "")
+
+    if "application/json" not in content_type:
+        raise Exception("INMET nao retornou JSON")
+
+    try:
+        dados = r.json()
+    except Exception:
+        raise Exception("JSON invalido do INMET")
+
+    if not isinstance(dados, list):
+        raise Exception("Formato inesperado do INMET")
 
     alertas = []
 
@@ -26,7 +40,6 @@ def ler_alertas():
         alertas.append({
             "titulo": a.get("titulo", ""),
             "descricao": a.get("descricao", ""),
-            "nivel": a.get("nivel", ""),
             "severidade": a.get("severidade", ""),
             "uf": a.get("uf", ""),
             "inicio": a.get("inicio", ""),
@@ -53,19 +66,8 @@ def inmet():
             "erro": str(e)
         }), 503
 
-    # TEXTUAL
-    if modo == "textual":
-        return jsonify({
-            "fonte": "INMET",
-            "modo": "textual",
-            "total": len(alertas),
-            "alertas": alertas
-        })
-
-    # GEOGRÁFICO (por UF / região)
     if modo == "geografico":
         por_uf = {}
-
         for a in alertas:
             uf = a["uf"] or "DESCONHECIDO"
             por_uf.setdefault(uf, []).append(a)
@@ -76,4 +78,9 @@ def inmet():
             "ufs": por_uf
         })
 
-    return jsonify({"erro": "modo invalido"}), 400
+    return jsonify({
+        "fonte": "INMET",
+        "modo": "textual",
+        "total": len(alertas),
+        "alertas": alertas
+    })
