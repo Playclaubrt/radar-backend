@@ -1,4 +1,3 @@
-import os
 import requests
 import xml.etree.ElementTree as ET
 from flask import Flask, jsonify, request
@@ -9,11 +8,22 @@ CORS(app)
 
 INMET_RSS = "https://apiprevmet3.inmet.gov.br/alertas/rss"
 
-def ler_alertas():
-    r = requests.get(INMET_RSS, timeout=15)
-    r.raise_for_status()
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 INMET-Client"
+}
 
-    root = ET.fromstring(r.content)
+def ler_alertas():
+    r = requests.get(INMET_RSS, headers=HEADERS, timeout=20)
+
+    # Se o INMET estiver fora do ar
+    if r.status_code != 200:
+        raise Exception("INMET indisponivel")
+
+    # Garante que é XML
+    if "<rss" not in r.text and "<feed" not in r.text:
+        raise Exception("Resposta nao XML do INMET")
+
+    root = ET.fromstring(r.text)
     alertas = []
 
     for item in root.findall(".//item"):
@@ -21,17 +31,18 @@ def ler_alertas():
         descricao = item.findtext("description", "").strip()
         link = item.findtext("link", "").strip()
 
-        alertas.append({
-            "titulo": titulo,
-            "descricao": descricao,
-            "link": link
-        })
+        if titulo:
+            alertas.append({
+                "titulo": titulo,
+                "descricao": descricao,
+                "link": link
+            })
 
     return alertas
 
 
 @app.route("/")
-def home():
+def status():
     return jsonify({"status": "ok", "fonte": "INMET"})
 
 
@@ -42,20 +53,14 @@ def inmet():
     try:
         alertas = ler_alertas()
     except Exception as e:
-        return jsonify({"erro": "falha ao ler INMET"}), 500
-
-    if modo == "textual":
         return jsonify({
             "fonte": "INMET",
-            "modo": "textual",
-            "alertas": alertas
-        })
+            "erro": str(e)
+        }), 503
 
-    if modo == "geografico":
-        return jsonify({
-            "fonte": "INMET",
-            "modo": "geografico",
-            "alertas": alertas
-        })
-
-    return jsonify({"erro": "modo invalido"}), 400
+    return jsonify({
+        "fonte": "INMET",
+        "modo": modo,
+        "total": len(alertas),
+        "alertas": alertas
+    })
