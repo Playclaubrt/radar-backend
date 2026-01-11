@@ -1,42 +1,37 @@
 import requests
-import xml.etree.ElementTree as ET
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 app = Flask(__name__)
 CORS(app)
 
-INMET_RSS = "https://apiprevmet3.inmet.gov.br/alertas/rss"
+INMET_JSON = "https://apiprevmet3.inmet.gov.br/alertas/ativos"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 INMET-Client"
+    "User-Agent": "INMET-Client",
+    "Accept": "application/json"
 }
 
 def ler_alertas():
-    r = requests.get(INMET_RSS, headers=HEADERS, timeout=20)
+    r = requests.get(INMET_JSON, headers=HEADERS, timeout=20)
 
-    # Se o INMET estiver fora do ar
     if r.status_code != 200:
         raise Exception("INMET indisponivel")
 
-    # Garante que é XML
-    if "<rss" not in r.text and "<feed" not in r.text:
-        raise Exception("Resposta nao XML do INMET")
+    dados = r.json()
 
-    root = ET.fromstring(r.text)
     alertas = []
 
-    for item in root.findall(".//item"):
-        titulo = item.findtext("title", "").strip()
-        descricao = item.findtext("description", "").strip()
-        link = item.findtext("link", "").strip()
-
-        if titulo:
-            alertas.append({
-                "titulo": titulo,
-                "descricao": descricao,
-                "link": link
-            })
+    for a in dados:
+        alertas.append({
+            "titulo": a.get("titulo", ""),
+            "descricao": a.get("descricao", ""),
+            "nivel": a.get("nivel", ""),
+            "severidade": a.get("severidade", ""),
+            "uf": a.get("uf", ""),
+            "inicio": a.get("inicio", ""),
+            "fim": a.get("fim", "")
+        })
 
     return alertas
 
@@ -58,9 +53,27 @@ def inmet():
             "erro": str(e)
         }), 503
 
-    return jsonify({
-        "fonte": "INMET",
-        "modo": modo,
-        "total": len(alertas),
-        "alertas": alertas
-    })
+    # TEXTUAL
+    if modo == "textual":
+        return jsonify({
+            "fonte": "INMET",
+            "modo": "textual",
+            "total": len(alertas),
+            "alertas": alertas
+        })
+
+    # GEOGRÁFICO (por UF / região)
+    if modo == "geografico":
+        por_uf = {}
+
+        for a in alertas:
+            uf = a["uf"] or "DESCONHECIDO"
+            por_uf.setdefault(uf, []).append(a)
+
+        return jsonify({
+            "fonte": "INMET",
+            "modo": "geografico",
+            "ufs": por_uf
+        })
+
+    return jsonify({"erro": "modo invalido"}), 400
