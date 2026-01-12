@@ -8,45 +8,64 @@ app = Flask(__name__)
 
 CAP_NS = {"cap": "urn:oasis:names:tc:emergency:cap:1.2"}
 
-def parse_cap(xml_bytes):
-    root = ET.fromstring(xml_bytes)
-
-    info = root.find("cap:info", CAP_NS)
-    if info is None:
+def parse_rss(root):
+    channel = root.find("channel")
+    if channel is None:
         return []
 
-    alerta = {}
+    conteudo = []
+    for item in channel.findall("item"):
+        alerta = {}
+        for tag in ["title", "description", "pubDate", "link"]:
+            el = item.find(tag)
+            if el is not None and el.text:
+                alerta[tag] = el.text.strip()
+        if alerta:
+            conteudo.append(alerta)
+    return conteudo
 
-    def get(path):
-        el = info.find(f"cap:{path}", CAP_NS)
-        return el.text.strip() if el is not None and el.text else None
 
-    alerta["evento"] = get("event")
-    alerta["descricao"] = get("description")
-    alerta["instrucao"] = get("instruction")
-    alerta["severidade"] = get("severity")
-    alerta["urgencia"] = get("urgency")
-    alerta["certeza"] = get("certainty")
-    alerta["inicio"] = get("onset")
-    alerta["fim"] = get("expires")
-    alerta["titulo"] = get("headline")
-    alerta["link"] = get("web")
+def parse_cap(root):
+    conteudo = []
+    for info in root.findall("cap:info", CAP_NS):
+        alerta = {}
 
-    area = info.find("cap:area", CAP_NS)
-    if area is not None:
-        area_desc = area.find("cap:areaDesc", CAP_NS)
-        polygon = area.find("cap:polygon", CAP_NS)
+        def get(tag):
+            el = info.find(f"cap:{tag}", CAP_NS)
+            return el.text.strip() if el is not None and el.text else None
 
-        if area_desc is not None and area_desc.text:
-            alerta["area"] = area_desc.text.strip()
+        fields = {
+            "evento": "event",
+            "descricao": "description",
+            "instrucao": "instruction",
+            "severidade": "severity",
+            "urgencia": "urgency",
+            "certeza": "certainty",
+            "inicio": "onset",
+            "fim": "expires",
+            "titulo": "headline",
+            "link": "web"
+        }
 
-        if polygon is not None and polygon.text:
-            alerta["poligono"] = polygon.text.strip()
+        for k, v in fields.items():
+            val = get(v)
+            if val:
+                alerta[k] = val
 
-    # remove chaves vazias
-    alerta = {k: v for k, v in alerta.items() if v}
+        area = info.find("cap:area", CAP_NS)
+        if area is not None:
+            area_desc = area.find("cap:areaDesc", CAP_NS)
+            polygon = area.find("cap:polygon", CAP_NS)
 
-    return [alerta] if alerta else []
+            if area_desc is not None and area_desc.text:
+                alerta["area"] = area_desc.text.strip()
+            if polygon is not None and polygon.text:
+                alerta["poligono"] = polygon.text.strip()
+
+        if alerta:
+            conteudo.append(alerta)
+
+    return conteudo
 
 
 @app.route("/inmet", methods=["GET"])
@@ -55,10 +74,23 @@ def inmet():
         INMET_URL,
         allow_redirects=True,
         timeout=20,
-        headers={"User-Agent": "INMET-CAP-Client"}
+        headers={"User-Agent": "INMET-MultiParser"}
     )
 
-    conteudo = parse_cap(resp.content)
+    try:
+        root = ET.fromstring(resp.content)
+    except ET.ParseError:
+        return jsonify({
+            "fonte": "INMET",
+            "conteudo": []
+        })
+
+    if root.tag.endswith("rss"):
+        conteudo = parse_rss(root)
+    elif root.tag.endswith("alert"):
+        conteudo = parse_cap(root)
+    else:
+        conteudo = []
 
     return jsonify({
         "fonte": "INMET",
