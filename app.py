@@ -1,115 +1,118 @@
 from flask import Flask, jsonify, request
-import requests
 import feedparser
-from bs4 import BeautifulSoup
 import time
+import threading
+import os
 
 app = Flask(__name__)
 
+# ================= CONFIG =================
+FEED_GERAL = "https://apiprevmet3.inmet.gov.br/alertas/rss"
+FEED_AVISO = "https://apiprevmet3.inmet.gov.br/avisos/rss/{}"
+INTERVALO = 50  # segundos
+
+# ================= CACHE =================
 CACHE = {
     "timestamp": 0,
-    "alertas": []
+    "avisos": {}
 }
 
-RSS_URL = "https://apiprevmet3.inmet.gov.br/alertas/rss"
-PORTAL_URL = "https://portal.inmet.gov.br/alertas"
+# ================= FUNÇÕES =================
+def extrair_id(link):
+    # ex: /avisos/rss/45736
+    return link.rstrip("/").split("/")[-1]
 
-CACHE_TTL = 300  # 5 minutos
 
-
-def ler_rss():
-    feed = feedparser.parse(RSS_URL)
-    alertas = []
-
-    if not feed.entries:
-        return alertas
+def ler_feed_geral():
+    feed = feedparser.parse(FEED_GERAL)
+    ids = set()
 
     for item in feed.entries:
-        alertas.append({
-            "titulo": item.get("title", ""),
-            "descricao": item.get("summary", ""),
-            "link": item.get("link", ""),
-            "inicio": item.get("published", ""),
-            "origem": "rss"
-        })
+        link = item.get("link", "")
+        if "/avisos/rss/" in link:
+            ids.add(extrair_id(link))
 
-    return alertas
+    return ids
 
 
-def ler_portal():
-    resp = requests.get(PORTAL_URL, timeout=10)
-    if resp.status_code != 200:
-        return []
+def ler_aviso(id_aviso):
+    feed = feedparser.parse(FEED_AVISO.format(id_aviso))
+    if not feed.entries:
+        return None
 
-    soup = BeautifulSoup(resp.text, "html.parser")
-    alertas = []
+    item = feed.entries[0]
 
-    cards = soup.select(".alerta-item")
-    for card in cards:
-        titulo = card.get_text(strip=True)
-        alertas.append({
-            "titulo": titulo,
-            "descricao": titulo,
-            "link": PORTAL_URL,
-            "inicio": "",
-            "origem": "portal"
-        })
-
-    return alertas
+    return {
+        "id": id_aviso,
+        "titulo": item.get("title", ""),
+        "descricao": item.get("summary", ""),
+        "link": item.get("link", ""),
+        "publicado": item.get("published", ""),
+        "origem": "INMET"
+    }
 
 
-def obter_alertas():
+def atualizar_cache():
     global CACHE
 
-    agora = time.time()
+    while True:
+        try:
+            ids_atuais = ler_feed_geral()
+            avisos_novos = {}
 
-    if agora - CACHE["timestamp"] < CACHE_TTL:
-        return CACHE["alertas"], True
+            for id_aviso in ids_atuais:
+                aviso = ler_aviso(id_aviso)
+                if aviso:
+                    avisos_novos[id_aviso] = aviso
 
-    alertas = ler_rss()
+            CACHE["avisos"] = avisos_novos
+            CACHE["timestamp"] = int(time.time())
 
-    if not alertas:
-        alertas = ler_portal()
+        except Exception as e:
+            print("Erro atualização INMET:", e)
 
-    if alertas:
-        CACHE = {
-            "timestamp": agora,
-            "alertas": alertas
-        }
-        return alertas, False
-
-    return CACHE["alertas"], True
+        time.sleep(INTERVALO)
 
 
+# ================= THREAD =================
+thread = threading.Thread(target=atualizar_cache, daemon=True)
+thread.start()
+
+# ================= ROTAS =================
 @app.route("/inmet")
-def inmet():
-    modo = request.args.get("modo", "textual")
-    alertas, cache = obter_alertas()
-
-    if modo == "geografico":
-        ufs = {}
-        for a in alertas:
-            uf = "BR"
-            ufs.setdefault(uf, []).append(a)
-
-        return jsonify({
-            "fonte": "INMET",
-            "modo": "geografico",
-            "cache": cache,
-            "total": sum(len(v) for v in ufs.values()),
-            "ufs": ufs
-        })
-
+def inmet_textual():
     return jsonify({
         "fonte": "INMET",
         "modo": "textual",
-        "cache": cache,
-        "total": len(alertas),
-        "alertas": alertas
+        "tempo_real": True,
+        "intervalo_segundos": INTERVALO,
+        "total": len(CACHE["avisos"]),
+        "alertas": list(CACHE["avisos"].values()),
+        "ultima_atualizacao": CACHE["timestamp"]
     })
 
 
+@app.route("/inmet/geografico")
+def inmet_geografico():
+    ufs = {}
+
+    for aviso in CACHE["avisos"].values():
+        # INMET nem sempre separa UF no RSS
+        # então agrupamos como BR até ter GeoRSS
+        ufs.setdefault("BR", []).append(aviso)
+
+    return jsonify({
+        "fonte": "INMET",
+        "modo": "geografico",
+        "tempo_real": True,
+        "intervalo_segundos": INTERVALO,
+        "total": sum(len(v) for v in ufs.values()),
+        "ufs": ufs,
+        "ultima_atualizacao": CACHE["timestamp"]
+    })
+
+
+# ================= MAIN =================
 if __name__ == "__main__":
-    import os
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
