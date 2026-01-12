@@ -7,9 +7,11 @@ INMET_RSS_URL = "https://apiprevmet3.inmet.gov.br/avisos/rss/"
 app = Flask(__name__)
 
 def parse_inmet_xml(xml_bytes):
-    root = ET.fromstring(xml_bytes)
+    try:
+        root = ET.fromstring(xml_bytes)
+    except ET.ParseError:
+        return []
 
-    # detecta namespace automaticamente
     ns = {}
     if root.tag.startswith("{"):
         ns["ns"] = root.tag.split("}")[0].strip("{")
@@ -56,6 +58,14 @@ def inmet():
         timeout=20,
         headers={"User-Agent": "INMET-Client"}
     )
+
+    content_type = resp.headers.get("Content-Type", "").lower()
+
+    if "xml" not in content_type:
+        return jsonify({
+            "fonte": "INMET",
+            "conteudo": []
+        })
 
     conteudo = parse_inmet_xml(resp.content)
 
