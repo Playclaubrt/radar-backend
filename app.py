@@ -2,72 +2,63 @@ import requests
 import xml.etree.ElementTree as ET
 from flask import Flask, jsonify
 
-INMET_RSS_URL = "https://apiprevmet3.inmet.gov.br/avisos/rss/"
+INMET_URL = "https://apiprevmet3.inmet.gov.br/avisos/rss/"
 
 app = Flask(__name__)
 
-def parse_inmet_xml(xml_bytes):
-    try:
-        root = ET.fromstring(xml_bytes)
-    except ET.ParseError:
+CAP_NS = {"cap": "urn:oasis:names:tc:emergency:cap:1.2"}
+
+def parse_cap(xml_bytes):
+    root = ET.fromstring(xml_bytes)
+
+    info = root.find("cap:info", CAP_NS)
+    if info is None:
         return []
 
-    ns = {}
-    if root.tag.startswith("{"):
-        ns["ns"] = root.tag.split("}")[0].strip("{")
+    alerta = {}
 
-    channel = root.find("ns:channel", ns) if ns else root.find("channel")
-    if channel is None:
-        return []
+    def get(path):
+        el = info.find(f"cap:{path}", CAP_NS)
+        return el.text.strip() if el is not None and el.text else None
 
-    conteudo = []
+    alerta["evento"] = get("event")
+    alerta["descricao"] = get("description")
+    alerta["instrucao"] = get("instruction")
+    alerta["severidade"] = get("severity")
+    alerta["urgencia"] = get("urgency")
+    alerta["certeza"] = get("certainty")
+    alerta["inicio"] = get("onset")
+    alerta["fim"] = get("expires")
+    alerta["titulo"] = get("headline")
+    alerta["link"] = get("web")
 
-    items = channel.findall("ns:item", ns) if ns else channel.findall("item")
-    for item in items:
-        alerta = {}
+    area = info.find("cap:area", CAP_NS)
+    if area is not None:
+        area_desc = area.find("cap:areaDesc", CAP_NS)
+        polygon = area.find("cap:polygon", CAP_NS)
 
-        def get(tag):
-            el = item.find(f"ns:{tag}", ns) if ns else item.find(tag)
-            return el.text.strip() if el is not None and el.text else None
+        if area_desc is not None and area_desc.text:
+            alerta["area"] = area_desc.text.strip()
 
-        titulo = get("title")
-        descricao = get("description")
-        data = get("pubDate")
-        link = get("link")
+        if polygon is not None and polygon.text:
+            alerta["poligono"] = polygon.text.strip()
 
-        if titulo:
-            alerta["titulo"] = titulo
-        if descricao:
-            alerta["descricao"] = descricao
-        if data:
-            alerta["data"] = data
-        if link:
-            alerta["link"] = link
+    # remove chaves vazias
+    alerta = {k: v for k, v in alerta.items() if v}
 
-        if alerta:
-            conteudo.append(alerta)
-
-    return conteudo
+    return [alerta] if alerta else []
 
 
 @app.route("/inmet", methods=["GET"])
 def inmet():
     resp = requests.get(
-        INMET_RSS_URL,
+        INMET_URL,
         allow_redirects=True,
         timeout=20,
-        headers={"User-Agent": "INMET-Client"}
+        headers={"User-Agent": "INMET-CAP-Client"}
     )
 
-    content_type = resp.headers.get("Content-Type", "").lower()
-
-    if "xml" not in content_type:
-        return jsonify({
-            "fonte": "INMET",
-            "conteudo": []
-        })
-
-    conteudo = parse_inmet_xml(resp.content)
+    conteudo = parse_cap(resp.content)
 
     return jsonify({
         "fonte": "INMET",
