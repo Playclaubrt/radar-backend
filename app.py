@@ -1,118 +1,83 @@
-from flask import Flask, jsonify, request
-import feedparser
+import requests
+import xml.etree.ElementTree as ET
+from flask import Flask, jsonify
+from datetime import datetime
 import time
-import threading
-import os
+
+INMET_RSS_URL = "https://apiprevmet3.inmet.gov.br/avisos/rss/"
+CACHE_TTL = 50  # segundos
 
 app = Flask(__name__)
 
-# ================= CONFIG =================
-FEED_GERAL = "https://apiprevmet3.inmet.gov.br/alertas/rss"
-FEED_AVISO = "https://apiprevmet3.inmet.gov.br/avisos/rss/{}"
-INTERVALO = 50  # segundos
-
-# ================= CACHE =================
-CACHE = {
+_cache = {
     "timestamp": 0,
-    "avisos": {}
+    "data": None
 }
 
-# ================= FUNÇÕES =================
-def extrair_id(link):
-    # ex: /avisos/rss/45736
-    return link.rstrip("/").split("/")[-1]
+def fetch_inmet_rss():
+    resp = requests.get(
+        INMET_RSS_URL,
+        timeout=15,
+        allow_redirects=True,
+        headers={
+            "User-Agent": "INMET-RSS-Client"
+        }
+    )
+
+    content_type = resp.headers.get("Content-Type", "")
+    if "xml" not in content_type.lower():
+        raise ValueError("Resposta não XML do INMET")
+
+    root = ET.fromstring(resp.content)
+
+    channel = root.find("channel")
+    if channel is None:
+        return []
+
+    alertas = []
+    for item in channel.findall("item"):
+        alerta = {}
+        for child in item:
+            tag = child.tag.split("}")[-1]
+            alerta[tag] = child.text.strip() if child.text else None
+        alertas.append(alerta)
+
+    return alertas
 
 
-def ler_feed_geral():
-    feed = feedparser.parse(FEED_GERAL)
-    ids = set()
+@app.route("/inmet", methods=["GET"])
+def inmet():
+    now = time.time()
 
-    for item in feed.entries:
-        link = item.get("link", "")
-        if "/avisos/rss/" in link:
-            ids.add(extrair_id(link))
+    if _cache["data"] and (now - _cache["timestamp"] < CACHE_TTL):
+        return jsonify(_cache["data"])
 
-    return ids
+    try:
+        alertas = fetch_inmet_rss()
+        data = {
+            "alertas": alertas,
+            "total": len(alertas),
+            "fonte": "INMET",
+            "cache": False,
+            "atualizado_em": datetime.utcnow().isoformat() + "Z"
+        }
+    except Exception as e:
+        data = {
+            "alertas": [],
+            "total": 0,
+            "fonte": "INMET",
+            "cache": False,
+            "erro": str(e),
+            "atualizado_em": datetime.utcnow().isoformat() + "Z"
+        }
 
+    _cache["timestamp"] = now
+    _cache["data"] = data
 
-def ler_aviso(id_aviso):
-    feed = feedparser.parse(FEED_AVISO.format(id_aviso))
-    if not feed.entries:
-        return None
-
-    item = feed.entries[0]
-
-    return {
-        "id": id_aviso,
-        "titulo": item.get("title", ""),
-        "descricao": item.get("summary", ""),
-        "link": item.get("link", ""),
-        "publicado": item.get("published", ""),
-        "origem": "INMET"
-    }
-
-
-def atualizar_cache():
-    global CACHE
-
-    while True:
-        try:
-            ids_atuais = ler_feed_geral()
-            avisos_novos = {}
-
-            for id_aviso in ids_atuais:
-                aviso = ler_aviso(id_aviso)
-                if aviso:
-                    avisos_novos[id_aviso] = aviso
-
-            CACHE["avisos"] = avisos_novos
-            CACHE["timestamp"] = int(time.time())
-
-        except Exception as e:
-            print("Erro atualização INMET:", e)
-
-        time.sleep(INTERVALO)
+    return jsonify(data)
 
 
-# ================= THREAD =================
-thread = threading.Thread(target=atualizar_cache, daemon=True)
-thread.start()
-
-# ================= ROTAS =================
-@app.route("/inmet")
-def inmet_textual():
-    return jsonify({
-        "fonte": "INMET",
-        "modo": "textual",
-        "tempo_real": True,
-        "intervalo_segundos": INTERVALO,
-        "total": len(CACHE["avisos"]),
-        "alertas": list(CACHE["avisos"].values()),
-        "ultima_atualizacao": CACHE["timestamp"]
-    })
-
-
-@app.route("/inmet/geografico")
-def inmet_geografico():
-    ufs = {}
-
-    for aviso in CACHE["avisos"].values():
-        # INMET nem sempre separa UF no RSS
-        # então agrupamos como BR até ter GeoRSS
-        ufs.setdefault("BR", []).append(aviso)
-
-    return jsonify({
-        "fonte": "INMET",
-        "modo": "geografico",
-        "tempo_real": True,
-        "intervalo_segundos": INTERVALO,
-        "total": sum(len(v) for v in ufs.values()),
-        "ufs": ufs,
-        "ultima_atualizacao": CACHE["timestamp"]
-    })
-
-
-# ================= MAIN =================
 if __name__ == "__main__":
+    import os
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
