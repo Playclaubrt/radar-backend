@@ -1,163 +1,115 @@
-import time
-import re
+from flask import Flask, jsonify, request
 import requests
-import xml.etree.ElementTree as ET
-from flask import Flask, jsonify
-from flask_cors import CORS
+import feedparser
+from bs4 import BeautifulSoup
+import time
 
 app = Flask(__name__)
-CORS(app)
 
-INMET_RSS = "https://apiprevmet3.inmet.gov.br/alertas/rss"
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0"
+CACHE = {
+    "timestamp": 0,
+    "alertas": []
 }
+
+RSS_URL = "https://apiprevmet3.inmet.gov.br/alertas/rss"
+PORTAL_URL = "https://portal.inmet.gov.br/alertas"
 
 CACHE_TTL = 300  # 5 minutos
-_cache = {
-    "timestamp": 0,
-    "dados": []
-}
-
-UFS = [
-    "AC","AL","AP","AM","BA","CE","DF","ES","GO","MA",
-    "MT","MS","MG","PA","PB","PR","PE","PI","RJ","RN",
-    "RS","RO","RR","SC","SP","SE","TO"
-]
-
-# -------------------------------------------------
-# LEITURA TOLERANTE DO RSS
-# -------------------------------------------------
-def tentar_ler_rss():
-    try:
-        r = requests.get(INMET_RSS, headers=HEADERS, timeout=20)
-    except Exception:
-        return None
-
-    if r.status_code != 200:
-        return None
-
-    texto = r.text.strip()
-
-    if "<item>" not in texto:
-        return None
-
-    return texto
 
 
-# -------------------------------------------------
-# EXTRAÇÃO COMPLETA DO ALERTA
-# -------------------------------------------------
-def converter(xml_texto):
-    try:
-        root = ET.fromstring(xml_texto)
-    except Exception:
-        return []
-
+def ler_rss():
+    feed = feedparser.parse(RSS_URL)
     alertas = []
 
-    for item in root.findall(".//item"):
-        titulo = item.findtext("title", "").strip()
-        descricao = item.findtext("description", "").strip()
-        link = item.findtext("link", "").strip()
-        pubdate = item.findtext("pubDate", "").strip()
+    if not feed.entries:
+        return alertas
 
-        if not titulo:
-            continue
-
-        # Severidade (texto)
-        severidade = "DESCONHECIDA"
-        if "PERIGO" in titulo.upper():
-            severidade = "PERIGO"
-        if "POTENCIAL" in titulo.upper():
-            severidade = "PERIGO POTENCIAL"
-
-        # Tipo do evento (chuva, vento, etc.)
-        tipo = "DESCONHECIDO"
-        for t in ["CHUVA", "VENTO", "GEADA", "ONDA DE CALOR", "FRIO"]:
-            if t in titulo.upper():
-                tipo = t
-                break
-
-        # UFs citadas
-        ufs_encontradas = []
-        for uf in UFS:
-            if uf in titulo or uf in descricao:
-                ufs_encontradas.append(uf)
-
-        if not ufs_encontradas:
-            ufs_encontradas = ["DESCONHECIDO"]
-
-        alerta = {
-            "titulo": titulo,
-            "descricao_completa": descricao,
-            "tipo": tipo,
-            "severidade": severidade,
-            "ufs": ufs_encontradas,
-            "link": link,
-            "publicado_em": pubdate
-        }
-
-        alertas.append(alerta)
+    for item in feed.entries:
+        alertas.append({
+            "titulo": item.get("title", ""),
+            "descricao": item.get("summary", ""),
+            "link": item.get("link", ""),
+            "inicio": item.get("published", ""),
+            "origem": "rss"
+        })
 
     return alertas
 
 
-# -------------------------------------------------
-# CACHE + FALLBACK
-# -------------------------------------------------
+def ler_portal():
+    resp = requests.get(PORTAL_URL, timeout=10)
+    if resp.status_code != 200:
+        return []
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    alertas = []
+
+    cards = soup.select(".alerta-item")
+    for card in cards:
+        titulo = card.get_text(strip=True)
+        alertas.append({
+            "titulo": titulo,
+            "descricao": titulo,
+            "link": PORTAL_URL,
+            "inicio": "",
+            "origem": "portal"
+        })
+
+    return alertas
+
+
 def obter_alertas():
+    global CACHE
+
     agora = time.time()
 
-    if agora - _cache["timestamp"] < CACHE_TTL:
-        return _cache["dados"], True, "cache"
+    if agora - CACHE["timestamp"] < CACHE_TTL:
+        return CACHE["alertas"], True
 
-    xml = tentar_ler_rss()
+    alertas = ler_rss()
 
-    if xml is None:
-        return _cache["dados"], True, "fallback"
+    if not alertas:
+        alertas = ler_portal()
 
-    dados = converter(xml)
+    if alertas:
+        CACHE = {
+            "timestamp": agora,
+            "alertas": alertas
+        }
+        return alertas, False
 
-    _cache["timestamp"] = agora
-    _cache["dados"] = dados
-
-    return dados, False, "inmet"
+    return CACHE["alertas"], True
 
 
-# -------------------------------------------------
-# ROTAS
-# -------------------------------------------------
-@app.route("/inmet/textual")
-def textual():
-    alertas, cache, origem = obter_alertas()
+@app.route("/inmet")
+def inmet():
+    modo = request.args.get("modo", "textual")
+    alertas, cache = obter_alertas()
+
+    if modo == "geografico":
+        ufs = {}
+        for a in alertas:
+            uf = "BR"
+            ufs.setdefault(uf, []).append(a)
+
+        return jsonify({
+            "fonte": "INMET",
+            "modo": "geografico",
+            "cache": cache,
+            "total": sum(len(v) for v in ufs.values()),
+            "ufs": ufs
+        })
 
     return jsonify({
         "fonte": "INMET",
         "modo": "textual",
-        "origem": origem,
         "cache": cache,
         "total": len(alertas),
         "alertas": alertas
     })
 
 
-@app.route("/inmet/geografico")
-def geografico():
-    alertas, cache, origem = obter_alertas()
-
-    por_uf = {uf: [] for uf in UFS}
-
-    for a in alertas:
-        for uf in a["ufs"]:
-            if uf in por_uf:
-                por_uf[uf].append(a)
-
-    return jsonify({
-        "fonte": "INMET",
-        "modo": "geografico",
-        "origem": origem,
-        "cache": cache,
-        "ufs": por_uf
-    })
+if __name__ == "__main__":
+    import os
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
